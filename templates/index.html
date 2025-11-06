@@ -7,53 +7,92 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
             padding: 20px;
         }
         .container {
             max-width: 1200px;
             margin: 0 auto;
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.05);
             overflow: hidden;
         }
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 30px;
+            padding: 30px 40px;
             text-align: center;
         }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .header h1 { font-size: 2.2em; margin-bottom: 10px; font-weight: 600; }
         .header p { opacity: 0.9; font-size: 1.1em; }
-        .content { padding: 40px; }
+        
+        .tab-buttons {
+            display: flex;
+            background: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+        }
+        .tab-button {
+            padding: 15px 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            color: #555;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .tab-button:hover { background: #e9e9e9; }
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        .tab-content {
+            display: none;
+            padding: 40px;
+        }
+        .tab-content.active { display: block; }
+
         .section { margin-bottom: 30px; }
-        .section h2 { color: #667eea; margin-bottom: 15px; font-size: 1.5em; }
+        .section h2 { color: #667eea; margin-bottom: 20px; font-size: 1.5em; border-bottom: 2px solid #f0f0f0; padding-bottom: 10px;}
         .input-group { margin-bottom: 20px; }
         label { display: block; margin-bottom: 8px; font-weight: 600; color: #333; }
         input[type="text"], textarea, input[type="file"] {
-            width: 100%; padding: 12px; border: 2px solid #e0e0e0;
-            border-radius: 8px; font-size: 14px; transition: border 0.3s;
+            width: 100%; padding: 12px; border: 1px solid #ccc;
+            border-radius: 8px; font-size: 14px; transition: border 0.3s, box-shadow 0.3s;
         }
-        input[type="text"]:focus, textarea:focus { outline: none; border-color: #667eea; }
+        input[type="text"]:focus, textarea:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2); }
         textarea { min-height: 150px; font-family: 'Courier New', monospace; resize: vertical; }
+        input::file-selector-button {
+            background: #667eea; color: white; border: none; padding: 8px 12px;
+            border-radius: 5px; cursor: pointer; margin-right: 10px; transition: background 0.2s;
+        }
+        input::file-selector-button:hover { background: #764ba2; }
         .btn {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white; border: none; padding: 15px 40px; border-radius: 8px;
             font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;
+            display: inline-block; text-align: center;
         }
         .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-        .result-box { background: #f8f9fa; border: 2px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-top: 20px; display: none; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn.btn-secondary {
+            background: #6c757d;
+        }
+        .btn.btn-secondary:hover { background: #5a6268; box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2); }
+
+        .result-box { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-top: 20px; display: none; }
         .result-box.show { display: block; }
         .result-box h3 { color: #28a745; margin-bottom: 15px; }
         .result-box pre { background: white; padding: 15px; border-radius: 5px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px; }
-        .stat-card { background: white; padding: 15px; border-radius: 8px; border-left: 4px solid #667eea; }
+        .stats { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 15px; }
+        .stat-card { background: white; padding: 15px; border-radius: 8px; border-left: 4px solid #667eea; box-shadow: 0 2px 5px rgba(0,0,0,0.05); flex-grow: 1; }
         .stat-card .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
         .stat-card .value { font-size: 24px; font-weight: bold; color: #333; margin-top: 5px; }
+        
         .loading { display: none; text-align: center; padding: 20px; }
         .loading.show { display: block; }
         .spinner {
@@ -61,18 +100,54 @@
             width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 10px;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .batch-section { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 20px; }
-        .example-json { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; font-family: 'Courier New', monospace; font-size: 12px; overflow-x: auto; }
+        
+        pre.api-example {
+            background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 8px; 
+            font-family: 'Courier New', monospace; font-size: 13px; overflow-x: auto;
+        }
+        
+        /* --- NOVO ESTILO PARA O CONTAINER DE PROGRESSO --- */
+        #batch-progress-container {
+            display: none; 
+            margin-top: 20px; 
+            padding: 25px; 
+            border: 1px solid #e0e0e0; 
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+        #batch-progress-container h3 { color: #667eea; margin-bottom: 15px; }
+        #batch-progress-container pre {
+            background: white; padding: 15px; border-radius: 5px; 
+            max-height: 200px; overflow-y: auto;
+            font-family: 'Courier New', monospace; font-size: 13px;
+            margin-top: 10px;
+        }
+        #progress-bar { width: 100%; height: 12px; border-radius: 6px; overflow: hidden; appearance: none; background: #e9ecef;}
+        #progress-bar::-webkit-progress-bar { background: #e9ecef; border-radius: 6px; }
+        #progress-bar::-webkit-progress-value { background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 6px; transition: width 0.3s ease; }
+        #progress-bar::-moz-progress-bar { background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 6px; transition: width 0.3s ease;}
+        
+        .progress-text { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .progress-text #progress-status-text { font-weight: 600; color: #555; }
+        .progress-text #progress-counter { font-weight: bold; font-size: 1.1em; color: #333; }
+        
+        #batch-result-actions { display: none; margin-top: 20px; gap: 15px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>🚀 Smart PDF Extractor</h1>
-            <p>Solução otimizada para extração de dados estruturados de PDFs</p>
+            <p>Extração de dados rápida, inteligente e com auto-aprendizagem.</p>
         </div>
         
-        <div class="content">
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="openTab(event, 'single')">Extração Única</button>
+            <button class="tab-button" onclick="openTab(event, 'batch')">Extração em Lote</button>
+            <button class="tab-button" onclick="openTab(event, 'api')">Instruções da API</button>
+        </div>
+        
+        <div id="single" class="tab-content active">
             <div class="section">
                 <h2>📄 Extração Única</h2>
                 <div class="input-group">
@@ -84,44 +159,154 @@
                     <textarea id="schema" placeholder='{"campo": "descrição do campo"}'></textarea>
                 </div>
                 <div class="input-group">
-                    <label for="pdf">Arquivo PDF:</label>
-                    <input type="file" id="pdf" accept=".pdf">
+                    <label for="pdf">Arquivo PDF/Imagem:</label>
+                    <input type="file" id="pdf" accept=".pdf,.png,.jpg,.jpeg">
                 </div>
-                <button class="btn" onclick="extractSingle()">Extrair Dados</button>
-                <div id="loading" class="loading">
+                <button class="btn" id="single-btn" onclick="extractSingle()">Extrair Dados</button>
+                <div id="loading-single" class="loading">
                     <div class="spinner"></div>
                     <p>Processando documento...</p>
                 </div>
-                <div id="result" class="result-box">
+                <div id="result-single" class="result-box">
                     <h3>✅ Resultado da Extração</h3>
                     <div class="stats">
                         <div class="stat-card">
                             <div class="label">Tempo</div>
-                            <div class="value" id="time">-</div>
+                            <div class="value" id="time-single">-</div>
                         </div>
                     </div>
-                    <pre id="resultJson"></pre>
+                    <pre id="resultJson-single"></pre>
                 </div>
             </div>
-            
-            <div class="section batch-section">
-                <h2>📦 Processamento em Lote</h2>
-                <p style="margin-bottom: 15px; color: #666;">
-                    Para processar múltiplos documentos, use o script <code>batch_extract.py</code>.
+        </div>
+        
+        <div id="batch" class="tab-content">
+            <div class="section">
+                <h2>📦 Extração em Lote (Upload)</h2>
+                <p style="margin-bottom: 20px; color: #555;">
+                    Faça o upload de um único ficheiro <code>.json</code> que define os pedidos, e de todos os ficheiros PDF/Imagem referenciados nesse JSON.
                 </p>
-                <h4>Endpoint da API:</h4>
-                <code style="background: #f0f0f0; padding: 10px; display: block; border-radius: 5px;">
-                    POST /api/batch
-                </code>
+                <div class="input-group">
+                    <label for="batch-json-file">1. Ficheiro JSON de Requisições:</label>
+                    <input type="file" id="batch-json-file" accept=".json">
+                </div>
+                <div class="input-group">
+                    <label for="batch-pdf-files">2. Ficheiros PDF/Imagem (pode selecionar múltiplos):</label>
+                    <input type="file" id="batch-pdf-files" accept=".pdf,.png,.jpg,.jpeg" multiple>
+                </div>
+                
+                <button class="btn" id="batch-btn" onclick="extractBatch()">Processar Lote</button>
+                
+                <div id="batch-progress-container">
+                    <div id="batch-loading-upload" class="loading show">
+                        <div class="spinner"></div>
+                        <p>Enviando arquivos e iniciando job...</p>
+                    </div>
+                    
+                    <div id="batch-running-progress" style="display: none;">
+                        <h3>Processando Lote...</h3>
+                        <div class="progress-text">
+                            <span id="progress-status-text">Iniciando...</span>
+                            <strong id="progress-counter">[0/0]</strong>
+                        </div>
+                        <progress id="progress-bar" value="0" max="100"></progress>
+                        
+                        <div style="margin-top: 15px; font-family: monospace; background: #f4f4f4; padding: 10px; border-radius: 4px;">
+                            <p style="font-weight: 600; font-family: -apple-system, sans-serif; margin-bottom: 5px;"><strong>Último Resultado:</strong></p>
+                            <pre id="last-result-json">Aguardando o primeiro item...</pre>
+                        </div>
+                    </div>
+                    
+                    <div id="batch-complete-summary" style="display: none;">
+                        <h3>✅ Lote Concluído!</h3>
+                         <div class="stats">
+                            <div class="stat-card">
+                                <div class="label">Arquivos Processados</div>
+                                <div class="value" id="total-files-summary">-</div>
+                            </div>
+                        </div>
+                        <p style="margin-top: 15px; font-weight: 600;">Resultados completos (JSON):</p>
+                        <pre id="resultJson-batch"></pre>
+                        <div id="batch-result-actions" style="display: flex; margin-top: 20px; gap: 15px;">
+                            <button class="btn" id="download-btn" onclick="downloadResults()">Baixar Resultados (.json)</button>
+                            <button class="btn btn-secondary" id="clear-job-button" onclick="cleanupJob()">Limpar</button>
+                        </div>
+                    </div>
+                    
+                     <div id="batch-failed-summary" style="display: none;">
+                        <h3 style="color: #dc3545;">❌ Erro no Processamento</h3>
+                        <p>Ocorreu um erro durante o processamento do lote:</p>
+                        <pre id="batch-error-message" style="background: #fff; color: #dc3545; border: 1px solid #dc3545;"></pre>
+                        <button class="btn btn-secondary" style="margin-top: 15px;" onclick="cleanupJob()">Limpar</button>
+                    </div>
+                </div>
+                
+                </div>
+        </div>
+
+        <div id="api" class="tab-content">
+            <div class="section">
+                <h2>🔌 Instruções da API</h2>
+                <p>Você pode usar a API diretamente com <code>curl</code> ou com o script <code>batch_extract.py</code>.</p>
+                
+                <h3 style="margin-top: 20px; margin-bottom: 10px;">Extração Única (via API)</h3>
+                <p>Endpoint: <code>POST /api/extract</code></p>
+                <pre class="api-example">
+curl -X POST http://127.0.0.1:8000/api/extract \
+     -F "label=carteira_oab" \
+     -F "extraction_schema={\"nome\": \"Nome do profissional\"}" \
+     -F "pdf=@/caminho/para/seu/oab_1.pdf"
+</pre>
+
+                <h3 style="margin-top: 20px; margin-bottom: 10px;">Extração em Lote (Recomendado)</h3>
+                <p>Endpoint: <code>POST /api/batch_upload</code> (Inicia o Job)</p>
+                <p>Endpoint: <code>GET /api/batch_status/&lt;job_id&gt;</code> (Verifica o Progresso)</p>
+                <p>A forma mais fácil de usar este endpoint é com o script <code>batch_extract.py</code>.</p>
+                
+                <h4 style="margin-top: 15px; margin-bottom: 5px;">Método 1: Usando o Script `batch_extract.py`</h4>
+                <p>Este script é feito para rodar no terminal, mostrando o progresso e salvando os resultados incrementalmente.</p>
+                <pre class="api-example">
+# 1. Crie o seu ficheiro de pedidos (ex: batch_requests.json):
+# [
+#   { "label": "oab", "extraction_schema": {...}, "pdf_path": "/caminho/completo/oab_1.pdf" },
+#   { "label": "rg", "extraction_schema": {...}, "pdf_path": "/caminho/completo/rg_1.pdf" }
+# ]
+# (O "pdf_path" deve ser o caminho ABSOLUTO ou relativo ao script)
+
+# 2. Execute o script:
+python batch_extract.py --input batch_requests.json --output results.json
+</pre>
+
+                <h4 style="margin-top: 15px; margin-bottom: 5px;">Método 2: Manualmente com `curl` (via UI)</h4>
+                <p>O `curl` não é ideal para esta UI. Use o formulário acima, que constrói o pedido `multipart/form-data` e depois consulta o endpoint de status.</p>
             </div>
         </div>
     </div>
     
     <script>
+        // Variáveis globais para o polling
+        let jobPoller = null;
+        let currentJobId = null;
+        let batchResultData = null; // Armazena os resultados finais para download
+
+        function openTab(event, tabName) {
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            
+            const buttons = document.querySelectorAll('.tab-button');
+            buttons.forEach(btn => btn.classList.remove('active'));
+            
+            document.getElementById(tabName).classList.add('active');
+            event.currentTarget.classList.add('active');
+        }
+
         async function extractSingle() {
             const label = document.getElementById('label').value;
             const schemaText = document.getElementById('schema').value;
             const pdfFile = document.getElementById('pdf').files[0];
+            const btn = document.getElementById('single-btn');
+            const loading = document.getElementById('loading-single');
+            const resultBox = document.getElementById('result-single');
             
             if (!label || !schemaText || !pdfFile) {
                 alert('Por favor, preencha todos os campos!');
@@ -141,8 +326,9 @@
             formData.append('extraction_schema', JSON.stringify(schema));
             formData.append('pdf', pdfFile);
             
-            document.getElementById('loading').classList.add('show');
-            document.getElementById('result').classList.remove('show');
+            loading.classList.add('show');
+            resultBox.classList.remove('show');
+            btn.disabled = true;
             
             try {
                 const response = await fetch('/api/extract', {
@@ -152,22 +338,243 @@
                 
                 const data = await response.json();
                 
-                document.getElementById('loading').classList.remove('show');
+                if (!response.ok) {
+                    throw new Error(data.error || 'Erro desconhecido no servidor.');
+                }
                 
-                if (data.error) {
-                    alert('Erro: ' + data.error);
+                resultBox.classList.add('show');
+                document.getElementById('time-single').textContent = data.time_taken + 's';
+                document.getElementById('resultJson-single').textContent = JSON.stringify(data.data, null, 2);
+                
+            } catch (error) {
+                alert('Erro ao processar: ' + error.message);
+            } finally {
+                loading.classList.remove('show');
+                btn.disabled = false;
+            }
+        }
+
+        // --- LÓGICA DE LOTE ATUALIZADA ---
+
+        async function extractBatch() {
+            const jsonFile = document.getElementById('batch-json-file').files[0];
+            const pdfFiles = document.getElementById('batch-pdf-files').files;
+            const btn = document.getElementById('batch-btn');
+            
+            // Pega os contêineres de estado
+            const progressContainer = document.getElementById('batch-progress-container');
+            const loadingUpload = document.getElementById('batch-loading-upload');
+            const runningProgress = document.getElementById('batch-running-progress');
+            const completeSummary = document.getElementById('batch-complete-summary');
+            const failedSummary = document.getElementById('batch-failed-summary');
+
+            if (jobPoller) {
+                alert("Um lote já está em processamento. Aguarde ou limpe o resultado.");
+                return;
+            }
+            
+            if (!jsonFile || pdfFiles.length === 0) {
+                alert('Por favor, envie o ficheiro JSON e pelo menos um ficheiro PDF/Imagem.');
+                return;
+            }
+
+            // Validação: O JSON corresponde aos ficheiros?
+            try {
+                const jsonText = await jsonFile.text();
+                const jobs = JSON.parse(jsonText);
+                const fileNamesInJson = new Set(jobs.map(j => j.pdf_path));
+                const fileNamesUploaded = new Set(Array.from(pdfFiles).map(f => f.name));
+
+                if (fileNamesInJson.size > fileNamesUploaded.size) {
+                     alert(`Disparidade de ficheiros!\nO JSON espera ${fileNamesInJson.size} ficheiros únicos, mas você enviou apenas ${fileNamesUploaded.size}.`);
+                    return;
+                }
+
+                for (let name of fileNamesInJson) {
+                    if (!fileNamesUploaded.has(name)) {
+                        alert(`Ficheiro em falta!\nO JSON precisa do ficheiro "${name}", mas ele não foi incluído no upload.`);
+                        return;
+                    }
+                }
+
+            } catch (e) {
+                alert("Erro ao ler o ficheiro JSON: " + e.message);
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('request_json', jsonFile);
+            
+            for (let i = 0; i < pdfFiles.length; i++) {
+                formData.append('files', pdfFiles[i]);
+            }
+
+            // Reseta a UI para o estado de "Upload"
+            btn.disabled = true;
+            batchResultData = null; 
+            progressContainer.style.display = 'block'; // Mostra o painel principal
+            loadingUpload.style.display = 'block';  // Mostra o spinner de upload
+            runningProgress.style.display = 'none'; // Esconde o progresso
+            completeSummary.style.display = 'none'; // Esconde o sumário
+            failedSummary.style.display = 'none';   // Esconde a falha
+            document.getElementById('last-result-json').textContent = 'Aguardando o primeiro item...';
+
+            try {
+                // 1. Inicia o Job
+                const response = await fetch('/api/batch_upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json(); // Espera a resposta {"job_id": ...}
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Erro desconhecido no servidor.');
+                }
+                
+                // 2. Inicia o Polling
+                currentJobId = data.job_id;
+                loadingUpload.style.display = 'none';     // Esconde o spinner de upload
+                runningProgress.style.display = 'block';  // Mostra a barra de progresso
+                document.getElementById('progress-counter').textContent = `[ 0 / ${data.total_files} ]`;
+                
+                pollJobStatus(currentJobId); // Começa a perguntar pelo status
+
+            } catch (error) {
+                alert('Erro ao iniciar o lote: ' + error.message);
+                cleanupJob(); // Limpa a UI se o upload falhar
+            }
+        }
+
+        function pollJobStatus(jobId) {
+            // Elementos da UI de progresso
+            const statusText = document.getElementById('progress-status-text');
+            const counter = document.getElementById('progress-counter');
+            const progressBar = document.getElementById('progress-bar');
+            const lastResultJson = document.getElementById('last-result-json');
+            
+            // Elementos de contêiner
+            const runningProgress = document.getElementById('batch-running-progress');
+            const completeSummary = document.getElementById('batch-complete-summary');
+            const failedSummary = document.getElementById('batch-failed-summary');
+
+            jobPoller = setInterval(async () => {
+                if (!currentJobId) {
+                    clearInterval(jobPoller);
+                    jobPoller = null;
                     return;
                 }
                 
-                document.getElementById('result').classList.add('show');
-                document.getElementById('time').textContent = data.time_taken + 's';
-                document.getElementById('resultJson').textContent = JSON.stringify(data.data, null, 2);
-                
-            } catch (error) {
-                document.getElementById('loading').classList.remove('show');
-                alert('Erro ao processar: ' + error.message);
-            }
+                try {
+                    const response = await fetch(`/api/batch_status/${jobId}`);
+                    if (!response.ok) {
+                        throw new Error(`Erro no servidor: ${response.statusText}`);
+                    }
+                    
+                    const jobInfo = await response.json();
+
+                    // Atualiza a UI de progresso
+                    const progressPercent = (jobInfo.processed_count / jobInfo.total_files) * 100;
+                    progressBar.value = progressPercent;
+                    counter.textContent = `[ ${jobInfo.processed_count} / ${jobInfo.total_files} ]`;
+
+                    if (jobInfo.last_result) {
+                        lastResultJson.textContent = JSON.stringify(jobInfo.last_result, null, 2);
+                    }
+
+                    // Verifica se o job terminou
+                    if (jobInfo.status === 'running' || jobInfo.status === 'starting') {
+                        statusText.textContent = 'Processando...';
+                    
+                    } else if (jobInfo.status === 'complete') {
+                        statusText.textContent = 'Processamento Concluído!';
+                        clearInterval(jobPoller); // Para de perguntar
+                        jobPoller = null;
+                        
+                        // Salva dados para download
+                        batchResultData = jobInfo.results; 
+                        
+                        // Mostra sumário final
+                        runningProgress.style.display = 'none';
+                        completeSummary.style.display = 'block';
+                        document.getElementById('total-files-summary').textContent = jobInfo.total_files;
+                        document.getElementById('resultJson-batch').textContent = JSON.stringify(jobInfo.results, null, 2);
+                        
+                    } else if (jobInfo.status === 'failed') {
+                        statusText.textContent = `Falhou: ${jobInfo.error}`;
+                        clearInterval(jobPoller); // Para de perguntar
+                        jobPoller = null;
+                        
+                        // Mostra sumário de falha
+                        runningProgress.style.display = 'none';
+                        failedSummary.style.display = 'block';
+                        document.getElementById('batch-error-message').textContent = jobInfo.error;
+                    }
+
+                } catch (error) {
+                    console.error('Erro ao consultar status do job:', error);
+                    statusText.textContent = `Erro de conexão: ${error.message}`;
+                    clearInterval(jobPoller); // Para de perguntar
+                    jobPoller = null;
+                }
+            }, 2000); // Pergunta a cada 2 segundos
         }
+        
+        function cleanupJob() {
+            // Limpa a UI
+            document.getElementById('batch-progress-container').style.display = 'none';
+            document.getElementById('batch-loading-upload').style.display = 'block';
+            document.getElementById('batch-running-progress').style.display = 'none';
+            document.getElementById('batch-complete-summary').style.display = 'none';
+            document.getElementById('batch-failed-summary').style.display = 'none';
+            
+            document.getElementById('last-result-json').textContent = 'Aguardando o primeiro item...';
+            document.getElementById('resultJson-batch').textContent = '';
+            document.getElementById('batch-btn').disabled = false;
+            
+            // Para qualquer poller
+            if (jobPoller) {
+                clearInterval(jobPoller);
+                jobPoller = null;
+            }
+
+            // Tenta limpar do servidor (não bloqueia a UI)
+            if (currentJobId) {
+                fetch(`/api/batch_cleanup/${currentJobId}`, { method: 'POST' })
+                    .catch(err => console.error("Falha ao limpar job do servidor:", err));
+                currentJobId = null;
+            }
+            
+            batchResultData = null;
+        }
+
+        function downloadResults() {
+            if (!batchResultData) {
+                alert("Nenhum dado de resultado para baixar.");
+                return;
+            }
+            
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(batchResultData, null, 2));
+            const downloadAnchor = document.createElement('a');
+            downloadAnchor.setAttribute("href", dataStr);
+            downloadAnchor.setAttribute("download", "extraction_results.json");
+            document.body.appendChild(downloadAnchor); 
+            downloadAnchor.click();
+            downloadAnchor.remove();
+        }
+        
+        // Exemplo de schema para facilitar o teste
+        const exampleSchema = {
+            "nome": "Nome do profissional",
+            "inscricao": "Número de inscrição",
+            "seccional": "Seccional",
+            "subsecao": "Subseção",
+            "categoria": "Categoria (ex: SUPLEMENTAR)",
+            "endereco_profissional": "Endereço completo",
+            "telefone_profissional": "Telefone",
+            "situacao": "Situação (ex: REGULAR)"
+        };
+        document.getElementById('schema').value = JSON.stringify(exampleSchema, null, 2);
     </script>
 </body>
 </html>
