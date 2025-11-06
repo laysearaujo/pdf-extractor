@@ -7,9 +7,7 @@ from dotenv import load_dotenv
 from extractor import SmartExtractor, ExtractRequest
 
 # --- Configuração de Logging ---
-# Reduz o log do extrator para não poluir o terminal
 logging.basicConfig(level=logging.ERROR)
-# Deixa o log do nosso script mais limpo
 log = logging.getLogger('batch_script')
 log.setLevel(logging.INFO)
 handler = logging.StreamHandler()
@@ -46,7 +44,6 @@ def run_batch():
         description="Roda extrações em lote de forma incremental e resumível.",
         usage="python batch_extract.py [CAMINHO_JSON] [CAMINHO_PASTA_PDFS]"
     )
-    # --- ARGUMENTOS MODIFICADOS ---
     parser.add_argument(
         "json_file", 
         help="Caminho para o arquivo JSON de requisições (ex: ./example_requests.json)"
@@ -55,7 +52,7 @@ def run_batch():
         "pdf_folder", 
         help="Caminho para a PASTA onde os PDFs/Imagens estão (ex: ./meus_pdfs/)"
     )
-    # Argumento de KB opcional mantido
+    # Argumento de KB opcional
     parser.add_argument(
         "-kb", "--kb_path",
         default=KB_FILENAME,
@@ -110,9 +107,9 @@ def run_batch():
             log.warning(f"Arquivo de saída {output_path} existe mas não pôde ser lido. Começando do zero. Erro: {e}")
             processed_results = []
 
-    # --- 4. Criar Lista de Requisições (com caminhos completos) ---
+    # --- 4. Criar Lista de Requisições ---
     requests_list = []
-    jobs_to_run_map = {} # Mapeia caminho completo -> job
+    jobs_to_run_map = {}
     
     for job in all_jobs:
         pdf_filename = job.get('pdf_path') # Ex: "oab_1.pdf"

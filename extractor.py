@@ -3,10 +3,10 @@ import re
 import json
 import logging
 from openai import OpenAI
-# ATUALIZADO: Importar Generator
 from typing import Optional, Any, List, Dict, Tuple, Generator 
 from dataclasses import dataclass, field as dataclass_field
 import hashlib
+from collections import defaultdict
 
 # Configuração de logging
 logging.basicConfig(
@@ -15,7 +15,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Mantido conforme sua solicitação
 LLM_MODEL_NAME = "gpt-5-mini"
 
 
@@ -28,7 +27,6 @@ class Heuristic:
     metadata: Dict = dataclass_field(default_factory=dict)
 
 
-# Dataclass para gerir pedidos em lote
 @dataclass
 class ExtractRequest:
     """Representa um único pedido de extração num lote."""
@@ -44,15 +42,15 @@ class ExtractRequest:
 
 class SmartExtractor:
     """
-    Extrator inteligente com estratégia de Template Fixo/Variável.
+    Extrator inteligente otimizado para <10s por documento.
     """
     
     def __init__(self, api_key: str):
         self.KB: Dict[str, Dict[str, Heuristic]] = {}
         self.label_metadata: Dict[str, Dict] = {} 
         
-        self.pdf_cache: Dict[str, Dict] = {} # Cache de RESULTADO
-        self.parsed_pdf_cache: Dict[str, Dict] = {} # Cache de PARSE (para velocidade)
+        self.pdf_cache: Dict[str, Dict] = {}
+        self.parsed_pdf_cache: Dict[str, Dict] = {}
         self.llm_client = OpenAI(api_key=api_key)
         
         self.INPUT_COST = 0.150 / 1_000_000
@@ -63,18 +61,17 @@ class SmartExtractor:
             'anchor_extractions': 0,
             'zone_extractions': 0,
             'llm_bootstraps': 0,
-            'llm_fallbacks': 0, # Agora conta fallbacks individuais
+            'llm_fallbacks': 0,
             'total_cost': 0.0
         }
         
-        log.info(f"SmartExtractor (Bootstrap LLM) inicializado com {LLM_MODEL_NAME}.")
+        log.info(f"SmartExtractor Otimizado inicializado com {LLM_MODEL_NAME}.")
 
     # ==================== HELPERS ====================
     
     def _get_pdf_hash(self, pdf_path: str) -> str:
         try:
             with open(pdf_path, 'rb') as f:
-                # Lê em blocos para não sobrecarregar a memória
                 sha256_hash = hashlib.sha256()
                 for byte_block in iter(lambda: f.read(4096), b""):
                     sha256_hash.update(byte_block)
@@ -82,6 +79,16 @@ class SmartExtractor:
         except Exception as e:
             log.warning(f"Não foi possível gerar hash para {pdf_path}: {e}")
             return ""
+
+    def _build_text_index(self, norm_words: List[Tuple[str, fitz.Rect]]) -> Dict[str, List[int]]:
+        """
+        OTIMIZAÇÃO: Cria índice invertido para busca O(1)
+        """
+        index = defaultdict(list)
+        for i, (text, rect) in enumerate(norm_words):
+            if text:
+                index[text].append(i)
+        return dict(index)
 
     def _parse_pdf(self, pdf_path: str) -> Optional[Dict[str, Any]]:
         doc = None
@@ -93,42 +100,45 @@ class SmartExtractor:
             
             page = doc[0]
 
-            # --- DADOS PARA O LLM (com fallback) ---
             try:
-                # 1. Tenta o modo "sort=True" (ideal para o LLM ver o layout)
                 layout_text = page.get_text("text", sort=True)
-                log.info("Extração de texto (modo 'sort=True') bem-sucedida.")
             except Exception as sort_error:
-                # 2. Se a ordenação falhar, volta para o modo padrão (texto empilhado)
-                log.warning(f"Extração (modo 'sort=True') falhou: {sort_error}. Voltando para o modo padrão (lógico).")
+                log.warning(f"Extração (modo 'sort=True') falhou: {sort_error}. Voltando para o modo padrão.")
                 layout_text = page.get_text("text", sort=False) 
 
-            # print("FULL TEXT (final usado para LLM):", layout_text) # Removido para diminuir o log
-            
-            # --- DADOS PARA AS HEURÍSTICAS ---
             words_data = page.get_text("words")
             if not words_data:
                 log.error(f"PDF não contém texto legível (sem 'words'): {pdf_path}")
                 return None
 
-            # --- OTIMIZAÇÃO: Pré-calcular palavras normalizadas UMA VEZ ---
+            # Pré-calcular palavras normalizadas
             norm_words = []
             for w in words_data:
                 norm_text = self._normalize_text(w[4])
                 if norm_text:
                     norm_words.append((norm_text, fitz.Rect(w[0:4])))
             
+            # Criar índice invertido
+            text_index = self._build_text_index(norm_words)
+            
+            # Truncar texto inteligentemente
+            # Campos importantes raramente estão no final
+            words = layout_text.split()
+            if len(words) > 4000:
+                layout_text = " ".join(words[:4000]) + "\n[...texto truncado...]"
+            
             return {
                 "doc": doc,
                 "page": page,
                 "words": words_data,
                 "norm_words": norm_words,
+                "text_index": text_index,
                 "full_text": layout_text,
                 "clean_text": layout_text
             }
             
         except Exception as e:
-            log.exception(f"Erro detalhado ao parsear PDF: {pdf_path}, ERRO: {e}")
+            log.exception(f"Erro ao parsear PDF: {pdf_path}, ERRO: {e}")
             if doc:
                 doc.close()
             return None
@@ -144,9 +154,9 @@ class SmartExtractor:
         text = re.sub(r'[ç]', 'c', text, flags=re.IGNORECASE)
         return re.sub(r'[\s_:]+', '', text.lower())
 
-    def _search_for_normalized(self, page: fitz.Page, needle: str, norm_words: List[Tuple[str, fitz.Rect]]) -> List[fitz.Rect]:
+    def _search_for_normalized(self, page: fitz.Page, needle: str, norm_words: List[Tuple[str, fitz.Rect]], text_index: Dict[str, List[int]]) -> List[fitz.Rect]:
         """
-        Usa a lista pré-normalizada de palavras (norm_words) para encontrar a 'needle'.
+        OTIMIZADO: Usa índice invertido para busca rápida
         """
         if not needle:
             return []
@@ -155,11 +165,13 @@ class SmartExtractor:
         if not needle_norm:
             return []
         
+        # Busca O(1) no índice
+        if needle_norm in text_index:
+            i = text_index[needle_norm][0]  # Pega primeira ocorrência
+            return [norm_words[i][1]]
+        
+        # Fallback: busca multi-palavra
         for i in range(len(norm_words)):
-            
-            if norm_words[i][0] == needle_norm:
-                return [norm_words[i][1]] # Encontrado (palavra única)
-
             if needle_norm.startswith(norm_words[i][0]):
                 current_text = norm_words[i][0]
                 current_rect = fitz.Rect(norm_words[i][1])
@@ -170,13 +182,13 @@ class SmartExtractor:
                     current_text += norm_words[j][0]
                     current_rect.include_rect(norm_words[j][1])
                     if current_text == needle_norm:
-                        return [current_rect] # Encontrado (múltiplas palavras)
+                        return [current_rect]
                     if not needle_norm.startswith(current_text):
                         break 
         
-        return [] # Não encontrado
+        return []
 
-    # ==================== NÍVEL 1: APLICADORES ====================
+    # ==================== APLICADORES ====================
     
     def _apply_anchor_heuristic(self, heuristic: Heuristic, parsed_pdf: Dict) -> Optional[str]:
         try:
@@ -188,23 +200,30 @@ class SmartExtractor:
             regex = heuristic.metadata.get("regex")
             
             if not anchor_text: return None
-
-            # print('PAGINA:', page) # Removido para diminuir o log
             
             norm_words_data = parsed_pdf.get("norm_words")
-            anchor_rects = self._search_for_normalized(page, anchor_text, norm_words_data)
+            text_index = parsed_pdf.get("text_index", {})
+            anchor_rects = self._search_for_normalized(page, anchor_text, norm_words_data, text_index)
             if not anchor_rects:
-                log.warning(f"Não foi possível encontrar âncora (normalizada): '{anchor_text}'")
                 return None
             
             anchor_rect = anchor_rects[0]
             page_rect = page.rect
+            
+            search_rect = None
             
             if direction == "right":
                 search_rect = fitz.Rect(
                     anchor_rect.x1 + 2, 
                     anchor_rect.y0 - 2,
                     page_rect.width - 10, 
+                    anchor_rect.y1 + 2
+                )
+            elif direction == "left":
+                search_rect = fitz.Rect(
+                    10, 
+                    anchor_rect.y0 - 2,
+                    anchor_rect.x0 - 2, 
                     anchor_rect.y1 + 2
                 )
             elif direction == "below":
@@ -220,12 +239,32 @@ class SmartExtractor:
                         anchor_rect.x1 + 300, 
                         height
                     )
-                else: # layout == "full_width"
+                else: # layout "row"
                     search_rect = fitz.Rect(
                         5, 
                         anchor_rect.y1 + 2,
                         page_rect.width - 10, 
                         height
+                    )
+            elif direction == "above":
+                if multi_line:
+                    height = anchor_rect.y0 - 70
+                else:
+                    height = anchor_rect.y0 - 20
+                    
+                if layout == "column":
+                     search_rect = fitz.Rect(
+                        anchor_rect.x0 - 10, 
+                        height,
+                        anchor_rect.x1 + 300, 
+                        anchor_rect.y0 - 2
+                    )
+                else: # layout "row"
+                    search_rect = fitz.Rect(
+                        5, 
+                        height,
+                        page_rect.width - 10, 
+                        anchor_rect.y0 - 2
                     )
             else:
                 return None
@@ -236,21 +275,27 @@ class SmartExtractor:
             value_text = value_text.strip().replace(anchor_text, "").strip()
             
             if regex:
-                match = re.search(regex, value_text)
+                # Se houver regex, aplicamos em todo o bloco
+                match = re.search(regex, value_text, re.DOTALL) 
                 value_text = match.group(0) if match else None
             else:
+                # Lógica original de linha única / multi-linha
                 lines = [l.strip() for l in value_text.split('\n') if l.strip()]
                 if not lines:
                     value_text = None
                 elif multi_line:
                     value_text = "\n".join(lines)
                 else:
-                    value_text = lines[0]
+                    # Se for 'above' ou 'left', pegamos a última linha, não a primeira
+                    if direction in ("above", "left"):
+                        value_text = lines[-1]
+                    else:
+                        value_text = lines[0]
             
             if value_text:
                 preview = value_text.replace('\n', ' ')
                 preview = preview[:50] + "..." if len(preview) > 50 else preview
-                log.info(f"Âncora: '{anchor_text}' ({direction}/{layout}) → '{preview}'")
+                log.info(f"Âncora: '{anchor_text}' ({direction}) → '{preview}'")
                 return value_text
             
             return None
@@ -262,6 +307,8 @@ class SmartExtractor:
         try:
             page = parsed_pdf["page"]
             zone_coords = heuristic.value
+            regex = heuristic.metadata.get("regex")
+            
             if not zone_coords or len(zone_coords) != 4: return None
             
             zone_rect = fitz.Rect(zone_coords)
@@ -269,8 +316,14 @@ class SmartExtractor:
             
             if value_text and value_text.strip():
                 value_text = value_text.strip()
-                log.info(f"Zona: {zone_coords} → '{value_text}'")
-                return value_text
+                
+                if regex:
+                    match = re.search(regex, value_text, re.DOTALL)
+                    value_text = match.group(0) if match else None
+
+                if value_text:
+                    log.info(f"Zona: {zone_coords} (Regex: {bool(regex)}) → '{value_text[:50]}...'")
+                    return value_text
             
             return None
         except Exception as e:
@@ -286,28 +339,20 @@ class SmartExtractor:
         elif heuristic.type == "ZONE":
             self.stats['zone_extractions'] += 1
             value = self._apply_zone_heuristic(heuristic, parsed_pdf)
-
         elif heuristic.type == "ANCHOR_EMPTY":
-            log.info(f"Aplicando heurística ANCHOR_EMPTY (esperado Nulo)")
+            log.info(f"Aplicando heurística ANCHOR_EMPTY")
             anchor_text = heuristic.metadata.get("anchor_text")
             if not anchor_text: 
                 return None, False 
             
-            # Tenta aplicar a âncora normalmente
             value = self._apply_anchor_heuristic(heuristic, parsed_pdf) 
             
             if value:
-                # SUCESSO: Auto-correção. O campo não é mais nulo.
-                log.info(f"AUTOCORREÇÃO: ANCHOR_EMPTY encontrou um valor! '{value}'")
+                log.info(f"AUTOCORREÇÃO: ANCHOR_EMPTY encontrou valor! '{value}'")
                 return value, True 
             
-            # FALHA: A heurística esperava Nulo, mas não pôde confirmar.
-            # Isso pode significar que a âncora mudou OU que o valor agora existe
-            # e a âncora antiga não o encontrou.
-            # Em ambos os casos, deve falhar e ir para o LLM.
-            log.info(f"ANCHOR_EMPTY falhou em confirmar Nulo. Tratando como falha para acionar o LLM.")
+            log.info(f"ANCHOR_EMPTY falhou. Acionando LLM.")
             return None, False
-
         else:
             return None, False
 
@@ -316,12 +361,13 @@ class SmartExtractor:
         else:
             return None, False
 
-    # ==================== NÍVEL 2: APRENDIZADO NLP (FALLBACK) ====================
+    # ==================== NLP FALLBACK ====================
     
     def _learn_from_anchor(self, parsed_pdf: Dict, field: str, description: str) -> Tuple[Optional[str], Optional[Heuristic], bool]:
         page = parsed_pdf["page"]
         page_rect = page.rect
         norm_words_data = parsed_pdf.get("norm_words")
+        text_index = parsed_pdf.get("text_index", {})
         
         anchor_candidates = list(set([
             field, field.replace("_", " "), field.replace("_", " ").title(), 
@@ -333,12 +379,12 @@ class SmartExtractor:
         for anchor in anchor_candidates:
             if not anchor: continue
             
-            rects = self._search_for_normalized(page, anchor, norm_words_data)
+            rects = self._search_for_normalized(page, anchor, norm_words_data, text_index)
             if not rects: continue
             
             anchor_rect = rects[0]
             
-            # Tenta à DIREITA
+            # Direita
             search_right = fitz.Rect(anchor_rect.x1 + 2, anchor_rect.y0 - 2, page_rect.width - 10, anchor_rect.y1 + 2)
             value_right = page.get_text("text", clip=search_right)
             
@@ -351,7 +397,7 @@ class SmartExtractor:
                     log.info(f"(NLP) ÂNCORA (direita): '{anchor}' → '{value[:50]}...'")
                     return value, heuristic, True
             
-            # Tenta ABAIXO
+            # Abaixo
             search_below = fitz.Rect(
                 anchor_rect.x0 - 10, anchor_rect.y1 + 2, 
                 anchor_rect.x1 + 300, anchor_rect.y1 + 20
@@ -366,7 +412,7 @@ class SmartExtractor:
                     log.info(f"(NLP) ÂNCORA (abaixo): '{anchor}' → '{value[:50].replace(chr(10), ' ')}...'")
                     return value, heuristic, True
             
-            log.info(f"(NLP) ÂNCORA encontrada ('{anchor}') mas valor está VAZIO.")
+            log.info(f"(NLP) ÂNCORA '{anchor}' encontrada mas valor VAZIO.")
             heuristic = Heuristic(
                 type="ANCHOR_EMPTY", value=None, confidence=0.8,
                 metadata={"anchor_text": anchor, "direction": "right"} 
@@ -375,24 +421,24 @@ class SmartExtractor:
 
         return None, None, False
 
-    # ==================== NÍVEL 3: APRENDIZADO LLM ====================
+    # ==================== LLM ====================
     
     def _call_llm(self, prompt: str, json_mode: bool = False) -> Optional[str]:
         try:
             log.info(f"Chamando LLM... (JSON Mode: {json_mode})")
             
             model_params = {
-                "model": LLM_MODEL_NAME, "messages": [
+                "model": LLM_MODEL_NAME,
+                "messages": [
                     {"role": "system", "content": "Você é um assistente especialista em extração de dados de documentos. Siga as instruções de formato da resposta com precisão."},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 1.0 # Mantido em 1.0
+                "temperature": 1.0
             }
             if json_mode:
                 model_params["response_format"] = {"type": "json_object"}
 
             response = self.llm_client.chat.completions.create(**model_params)
-            log.info(f"Terminado LLM... (JSON Mode: {json_mode})")
             
             input_tokens = response.usage.prompt_tokens
             output_tokens = response.usage.completion_tokens
@@ -408,98 +454,151 @@ class SmartExtractor:
             log.error(f"Erro ao chamar LLM: {e}")
             return None
     
+    def _guess_regex_for_value(self, value: str) -> Optional[str]:
+        """Tenta adivinhar um regex comum para o valor extraído."""
+        if not value:
+            return None
+        
+        # CPF
+        if re.fullmatch(r'\d{3}\.\d{3}\.\d{3}-\d{2}', value):
+            return r'\d{3}\.\d{3}\.\d{3}-\d{2}'
+        # CNPJ
+        if re.fullmatch(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', value):
+            return r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
+        # Data (DD/MM/AAAA)
+        if re.fullmatch(r'\d{2}/\d{2}/\d{4}', value):
+            return r'\d{2}/\d{2}/\d{4}'
+        # CEP
+        if re.fullmatch(r'\d{5}-\d{3}', value):
+            return r'\d{5}-\d{3}'
+        # Apenas números (Inscrição, etc)
+        if re.fullmatch(r'\d+', value):
+            return r'\d+'
+        # Valor monetário (BRL)
+        if re.fullmatch(r'R\$\s*[\d\.,]+', value) or re.fullmatch(r'[\d\.,]+', value):
+             # Regex mais permissivo para capturar valores
+             if any(c in value for c in '.,'):
+                return r'[\d\.,]+'
+
+        return None
+
     def _derive_heuristic_for_value(self, parsed_pdf: Dict, field: str, value: str) -> Optional[Heuristic]:
         page = parsed_pdf["page"]
         norm_words_data = parsed_pdf.get("norm_words")
+        text_index = parsed_pdf.get("text_index", {})
         if not value: return None
         
-        # --- 1. Encontra a Localização do Valor ---
         clean_value = value.strip().replace(',', ' ').replace('\n', ' ')
         value_parts = clean_value.split()
         if len(value_parts) == 0:
             return None
         
-        value_for_search = " ".join(value_parts[0:3]) # Tenta 3 palavras
-        value_rects = self._search_for_normalized(page, value_for_search, norm_words_data)
+        # Tenta encontrar o melhor regex para o valor
+        regex = self._guess_regex_for_value(value.strip().split('\n')[0])
+        log.info(f"Regex aprendido para '{field}': {regex}")
+        
+        value_for_search = " ".join(value_parts[0:3])
+        value_rects = self._search_for_normalized(page, value_for_search, norm_words_data, text_index)
         
         if not value_rects:
-            value_for_search = " ".join(value_parts[0:1]) # Fallback: 1 palavra
-            value_rects = self._search_for_normalized(page, value_for_search, norm_words_data)
+            value_for_search = " ".join(value_parts[0:1])
+            value_rects = self._search_for_normalized(page, value_for_search, norm_words_data, text_index)
             
             if not value_rects:
-                log.warning(f"Não foi possível encontrar o texto (normalizado) '{value_for_search}' no PDF para derivar heurística.")
+                log.warning(f"Não foi possível encontrar '{value_for_search}' para derivar heurística.")
                 return None
         
         rect = value_rects[0]
+        metadata = {}
+        if regex:
+            metadata["regex"] = regex
         
-        # --- 2. TENTA DERIVAR UMA ÂNCORA ---
+        # Tenta âncora acima (Valor está "below" da âncora)
         anchor_rect_above = fitz.Rect(rect.x0 - 50, max(0, rect.y0 - 50), rect.x1 + 50, rect.y0 - 2)
         anchor_text_above = page.get_text("text", clip=anchor_rect_above).strip()
         if anchor_text_above:
             anchor = anchor_text_above.split('\n')[-1].strip().rstrip(' :')
             if len(anchor) > 3:
-                log.info(f"Heurística ÂNCORA (acima) derivada: '{anchor}' → '{value[:20]}...'")
-                return Heuristic(
-                    type="ANCHOR", value=None, confidence=0.9,
-                    metadata={"anchor_text": anchor, "direction": "below"}
-                )
+                log.info(f"Heurística ÂNCORA (acima): '{anchor}' → '{value[:20]}...'")
+                meta = metadata.copy()
+                meta.update({"anchor_text": anchor, "direction": "below"})
+                return Heuristic(type="ANCHOR", value=None, confidence=0.9, metadata=meta)
 
+        # Tenta âncora à esquerda (Valor está "right" da âncora)
         anchor_rect_left = fitz.Rect(max(0, rect.x0 - 300), rect.y0 - 5, rect.x0 - 2, rect.y1 + 5)
         anchor_text_left = page.get_text("text", clip=anchor_rect_left).strip()
         if anchor_text_left:
             anchor = anchor_text_left.split('\n')[-1].strip().rstrip(' :')
             if len(anchor) > 3:
-                log.info(f"Heurística ÂNCORA (esquerda) derivada: '{anchor}' → '{value[:20]}...'")
-                return Heuristic(
-                    type="ANCHOR", value=None, confidence=0.9,
-                    metadata={"anchor_text": anchor, "direction": "right"}
-                )
+                log.info(f"Heurística ÂNCORA (esquerda): '{anchor}' → '{value[:20]}...'")
+                meta = metadata.copy()
+                meta.update({"anchor_text": anchor, "direction": "right"})
+                return Heuristic(type="ANCHOR", value=None, confidence=0.9, metadata=meta)
         
-        # --- 3. FALLBACK: CRIAR UMA ZONA "HORIZONTAL SLICE" ---
+        # Tenta âncora abaixo (Valor está "above" da âncora)
+        anchor_rect_below = fitz.Rect(rect.x0 - 50, rect.y1 + 2, rect.x1 + 50, rect.y1 + 50)
+        anchor_text_below = page.get_text("text", clip=anchor_rect_below).strip()
+        if anchor_text_below:
+            anchor = anchor_text_below.split('\n')[0].strip().rstrip(' :')
+            if len(anchor) > 3:
+                log.info(f"Heurística ÂNCORA (abaixo): '{anchor}' → '{value[:20]}...'")
+                meta = metadata.copy()
+                meta.update({"anchor_text": anchor, "direction": "above"})
+                return Heuristic(type="ANCHOR", value=None, confidence=0.8, metadata=meta)
+
+        # Tenta âncora à direita (Valor está "left" da âncora)
+        anchor_rect_right = fitz.Rect(rect.x1 + 2, rect.y0 - 5, rect.x1 + 300, rect.y1 + 5)
+        anchor_text_right = page.get_text("text", clip=anchor_rect_right).strip()
+        if anchor_text_right:
+            anchor = anchor_text_right.split('\n')[0].strip().rstrip(' :')
+            if len(anchor) > 3:
+                log.info(f"Heurística ÂNCORA (direita): '{anchor}' → '{value[:20]}...'")
+                meta = metadata.copy()
+                meta.update({"anchor_text": anchor, "direction": "left"})
+                return Heuristic(type="ANCHOR", value=None, confidence=0.8, metadata=meta)
+
+        # ZONA horizontal (Fallback)
         page_rect = page.rect
         y0 = max(0, rect.y0 - 5)
         y1 = min(page_rect.height - 2, rect.y1 + 5) 
-        x0 = 5.0 # Margem esquerda
-        x1 = page_rect.width - 5.0 # Margem direita
+        x0 = 5.0
+        x1 = page_rect.width - 5.0
 
         if '\n' in value or len(clean_value) > 80:
             y1 = min(page_rect.height - 2, rect.y1 + 70) 
-            log.info("Heurística ZONA (multi-linha) detectada.")
         
         zone_coords = [x0, y0, x1, y1]
-        log.info(f"FALLBACK: Nenhuma âncora encontrada. Heurística ZONA 'Horizontal Slice' salva: {zone_coords}")
+        log.info(f"ZONA 'Horizontal Slice': {zone_coords}")
         
-        return Heuristic(type="ZONE", value=zone_coords, confidence=0.7, metadata={})
+        return Heuristic(type="ZONE", value=zone_coords, confidence=0.7, metadata=metadata)
 
     def _bootstrap_new_label_with_llm(self, label: str, extraction_schema: Dict[str, str], parsed_pdf: Dict) -> Dict[str, Any]:
-        log.info(f"(LLM) Bootstrap: Label novo '{label}'. Chamando LLM para dados e classificação.")
+        log.info(f"(LLM) Bootstrap: Label '{label}'")
         self.stats['llm_bootstraps'] += 1
         
-        fields_json_str = json.dumps(extraction_schema, indent=2, ensure_ascii=False)
-        text = parsed_pdf["full_text"] 
+        # Prompt mais enxuto
+        fields_list = "\n".join([f'"{k}": "{v}"' for k, v in extraction_schema.items()])
+        text = parsed_pdf["full_text"]  # Já truncado no parse
         
-        prompt = f"""Você é um especialista em extração de dados. Analise o documento e retorne um único objeto JSON.
-        O JSON deve ter DUAS chaves principais:
-        1. "template_fixo": true se for um template fixo (layout previsível como RG, OAB), false se for variável (nota fiscal, tela de app).
-        2. "fields": Um objeto JSON simples contendo os dados extraídos (chave: valor).
-        3. Validação: Caso a chave não faça sentido com o label retorne null.
+        prompt = f"""
+            Extraia dados do documento e retorne JSON com:
+            1. "template_fixo": true (layout fixo como RG/OAB) ou false (variável como nota fiscal)
+            2. "fields": objeto com os dados extraídos (use null se não encontrar)
 
-        Campos para extrair:
-        {fields_json_str}
+            Campos:
+            {fields_list}
 
-        Texto do Documento (com Layout):
-        ---
-        {text}
-        ---
-        Retorne APENAS o objeto JSON completo.
+            Documento:
+            ---
+            {text}
+            ---
+            JSON:
         """
         
-        # print(text) # Removido para diminuir o log
         response_str = self._call_llm(prompt, json_mode=True)
-        # print(f"response LLM: {response_str}") # Removido para diminuir o log
         
         if not response_str:
-            log.error("(LLM) Bootstrap falhou. Nenhuma resposta do LLM.")
+            log.error("Bootstrap falhou")
             return {field: None for field in extraction_schema.keys()}
         
         try:
@@ -507,7 +606,7 @@ class SmartExtractor:
             
             is_fixed = response_json.get('template_fixo', True)
             self.label_metadata[label] = {'template_fixo': is_fixed}
-            log.info(f"Template classificado como: {'FIXO' if is_fixed else 'VARIÁVEL'}")
+            log.info(f"Template: {'FIXO' if is_fixed else 'VARIÁVEL'}")
 
             final_data_clean = {} 
             self.KB[label] = {}
@@ -518,23 +617,20 @@ class SmartExtractor:
                 value_str_raw = str(fields_data.get(field)).strip() if fields_data.get(field) else None
                 
                 if not value_str_raw or value_str_raw.lower() == 'null':
-                    log.info(f"(LLM) Bootstrap: '{field}' → NÃO ENCONTRADO")
+                    log.info(f"Bootstrap: '{field}' → NÃO ENCONTRADO")
                     final_data_clean[field] = None
                     _, heuristic, found = self._learn_from_anchor(parsed_pdf, field, extraction_schema[field])
                     if found and heuristic and is_fixed:
                         self.KB[label][field] = heuristic
-                        log.info(f"Heurística NLP ('{heuristic.type}') salva para campo Nulo!")
                     continue
 
-                log.info(f"(LLM) Bootstrap: '{field}' → '{value_str_raw[:50].replace(chr(10), ' ')}...'")
+                log.info(f"Bootstrap: '{field}' → '{value_str_raw[:50].replace(chr(10), ' ')}...'")
                 
                 heuristic = self._derive_heuristic_for_value(parsed_pdf, field, value_str_raw)
 
                 if heuristic and is_fixed:
                     self.KB[label][field] = heuristic
-                    log.info(f"Heurística {heuristic.type} (derivada) salva para '{field}'")
-                elif not heuristic and is_fixed:
-                     log.warning(f"Não foi possível derivar heurística para '{field}' (Valor: '{value_str_raw}')")
+                    log.info(f"Heurística {heuristic.type} salva")
                 
                 value_str_clean = re.sub(r'\s*\n\s*', ', ', value_str_raw)
                 final_data_clean[field] = value_str_clean
@@ -542,35 +638,31 @@ class SmartExtractor:
             return final_data_clean
             
         except json.JSONDecodeError as e:
-            log.error(f"(LLM) Falha ao decodificar JSON do Bootstrap: {e}")
-            log.error(f"Resposta recebida: {response_str}")
+            log.error(f"Falha JSON: {e}")
             return {field: None for field in extraction_schema.keys()}
         except Exception as e:
-            log.error(f"(LLM) Erro inesperado no Bootstrap: {e}")
+            log.error(f"Erro Bootstrap: {e}")
             return {field: None for field in extraction_schema.keys()}
 
     def _extract_variable_template(self, extraction_schema: Dict[str, str], parsed_pdf: Dict) -> Dict[str, Any]:
-        """
-        Extrai dados de um template variável (modo rápido).
-        """
-        log.info(f"(LLM) Template variável: Chamando LLM com prompt rápido.")
+        log.info(f"(LLM) Template variável")
         self.stats['llm_fallbacks'] += 1 
-        
-        fields_json_str = json.dumps(extraction_schema, indent=2, ensure_ascii=False)
-        text = parsed_pdf["full_text"][:8000] # Otimização: Trunca o texto
-        
-        prompt = f"""Extraia os campos do texto. Responda APENAS com JSON. Use 'null' se não encontrar.
 
-        Campos:
-        {fields_json_str}
+        fields_list = "\n".join([f'"{k}": "{v}"' for k, v in extraction_schema.items()])
+        text = parsed_pdf["full_text"]  # Já truncado
+        
+        prompt = f"""
+            Extraia os campos. Retorne apenas JSON (use null se não encontrar):
 
-        Texto:
-        ---
-        {text}
-        ---
+            {fields_list}
+
+            Documento:
+            ---
+            {text}
+            ---
+            JSON:
         """
         
-        # Chama o _call_llm (que usará o gpt-5-mini padrão)
         response_str = self._call_llm(prompt, json_mode=True)
         
         try:
@@ -585,7 +677,6 @@ class SmartExtractor:
                     value_str = re.sub(r'\s*\n\s*', ', ', value_str)
                 extracted_data_clean[field] = value_str
             
-            # Garante que todos os campos do schema estejam presentes
             for field in extraction_schema.keys():
                 if field not in extracted_data_clean:
                     extracted_data_clean[field] = None
@@ -593,50 +684,41 @@ class SmartExtractor:
             return extracted_data_clean
             
         except Exception as e:
-            log.error(f"  ❌(LLM) Falha ao extrair template variável: {e}")
+            log.error(f"Falha template variável: {e}")
             return {field: None for field in extraction_schema.keys()}
 
-    # --- NOVO: Fallback de LLM para um único documento ---
     def _single_doc_llm_fallback(self, req: ExtractRequest):
-        """
-        Chama o LLM para campos específicos que falharam nas heurísticas
-        para um ÚNICO documento.
-        """
         if not req._failed_fields:
             return
 
-        log.info(f"  (LLM Fallback) Processando {len(req._failed_fields)} campos falhados para o label '{req.label}'...")
+        log.info(f"  (LLM Fallback) {len(req._failed_fields)} campos")
         self.stats['llm_fallbacks'] += 1
         
-        # 1. Cria o schema apenas com os campos que falharam
         failed_schema = {
             field: req.extraction_schema[field] 
             for field in req._failed_fields
         }
-        fields_json_str = json.dumps(failed_schema, indent=2, ensure_ascii=False)
+        fields_list = "\n".join([f'"{k}": "{v}"' for k, v in failed_schema.items()])
         text = req._parsed_pdf["full_text"]
 
-        # 2. Cria o prompt
-        prompt = f"""Extraia APENAS os seguintes campos do texto. Responda APENAS com JSON. Use 'null' se não encontrar.
+        prompt = f"""
+            Extraia apenas estes campos (use null se não encontrar):
 
-        Campos para extrair:
-        {fields_json_str}
+            {fields_list}
 
-        Texto do Documento (com Layout):
-        ---
-        {text}
-        ---
+            Documento:
+            ---
+            {text}
+            ---
+            JSON:
         """
-        
-        # 3. Chama o LLM
+
         response_str = self._call_llm(prompt, json_mode=True)
-        
+
         if not response_str:
-            log.error("  (LLM Fallback) Falha. Nenhuma resposta do LLM.")
-            # Os campos já estão como None em req._result, então apenas retornamos
+            log.error("  Fallback falhou")
             return
 
-        # 4. Processa a resposta
         try:
             batch_results = json.loads(response_str)
             
@@ -645,43 +727,38 @@ class SmartExtractor:
                 
                 if value and str(value).lower() != 'null':
                     value_str = str(value)
-                    log.info(f"  (LLM Fallback) SUCESSO para '{field}'")
-                    # Salva o resultado diretamente no objeto da requisição
+                    log.info(f"  Fallback SUCESSO: '{field}'")
                     req._result[field] = value_str
                     
-                    # Tenta aprender a heurística e salvar no KB
                     new_heuristic = self._derive_heuristic_for_value(
                         req._parsed_pdf, field, value_str
                     )
                     if new_heuristic:
                         self.KB[req.label][field] = new_heuristic
-                        log.info(f"  AUTOCORREÇÃO: Nova heurística '{new_heuristic.type}' salva para '{field}'")
+                        log.info(f"  AUTOCORREÇÃO: '{new_heuristic.type}' salva")
                 else:
-                    log.warning(f"  (LLM Fallback) FALHA para '{field}' (retornou null)")
-                    req._result[field] = None # Garante que seja None
+                    log.warning(f"  Fallback FALHA: '{field}'")
+                    req._result[field] = None
 
-        except json.JSONDecodeError as e:
-            log.error(f"  (LLM Fallback) Falha ao decodificar JSON: {e}")
-            log.error(f"  Resposta recebida: {response_str}")
         except Exception as e:
-            log.error(f"  (LLM Fallback) Erro inesperado: {e}")
+            log.error(f"  Fallback erro: {e}")
 
     # ==================== EXTRAÇÃO PRINCIPAL ====================
     
     def print_stats(self):
         print("\n" + "="*70)
-        print("ESTATÍSTICAS DO EXTRATOR")
+        print("ESTATÍSTICAS")
         print("="*70)
-        print(f"Cache hits:           {self.stats['cache_hits']}")
-        print(f"Extração por âncora:  {self.stats['anchor_extractions']}")
-        print(f"Extração por zona:    {self.stats['zone_extractions']}")
-        print(f"LLM Bootstraps (1ª vez): {self.stats['llm_bootstraps']}")
-        print(f"LLM Fallbacks (indiv.): {self.stats['llm_fallbacks']}") # Atualizado
-        print(f"Custo total:          ${self.stats['total_cost']:.6f}")
-        print(f"Labels aprendidos:    {len(self.KB)}")
+        print(f"Cache hits:          {self.stats['cache_hits']}")
+        print(f"Âncoras:             {self.stats['anchor_extractions']}")
+        print(f"Zonas:               {self.stats['zone_extractions']}")
+        print(f"LLM Bootstraps:      {self.stats['llm_bootstraps']}")
+        print(f"LLM Fallbacks:       {self.stats['llm_fallbacks']}")
+        print(f"Custo total:         ${self.stats['total_cost']:.6f}")
+        print(f"Labels aprendidos:   {len(self.KB)}")
         
         total_heuristics = sum(len(fields) for fields in self.KB.values())
-        print(f"Heurísticas salvas:   {total_heuristics}")
+        print(f"Heurísticas salvas:  {total_heuristics}")
         print("="*70 + "\n")
     
     def export_kb(self, filepath: str):
@@ -703,7 +780,7 @@ class SmartExtractor:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, indent=2, ensure_ascii=False)
         
-        log.info(f"Knowledge base exportado para: {filepath}")
+        log.info(f"KB exportado: {filepath}")
     
     def import_kb(self, filepath: str):
         try:
@@ -725,17 +802,15 @@ class SmartExtractor:
                         metadata=heur_data.get('metadata', {})
                     )
             
-            log.info(f"Knowledge base importado de: {filepath} (Labels: {len(self.KB)}, Metadados: {len(self.label_metadata)})")
+            log.info(f"KB importado: {filepath} ({len(self.KB)} labels)")
             
         except Exception as e:
             log.error(f"Erro ao importar KB: {e}")
 
-    # NOVO: Método para extração "burra" (sem label)
     def extract_unlabeled(self, extraction_schema: Dict[str, str], 
                           pdf_path: str) -> Dict[str, Any]:
         """
-        Extrai dados de um PDF desconhecido, sem usar/salvar heurísticas.
-        Sempre usa o LLM no modo "rápido" (template variável).
+        Extrai dados sem usar/salvar heurísticas (modo rápido).
         """
         print(f"\n{'='*70}")
         print(f"Requisição (Sem Label) | {len(extraction_schema)} campos")
@@ -744,7 +819,7 @@ class SmartExtractor:
 
         pdf_hash = self._get_pdf_hash(pdf_path)
         if pdf_hash and pdf_hash in self.pdf_cache:
-            log.info(f"CACHE HIT (Resultado): PDF já processado")
+            log.info(f"CACHE HIT")
             self.stats['cache_hits'] += 1
             cached_data = self.pdf_cache[pdf_hash]
             cleaned_cache = {}
@@ -759,13 +834,13 @@ class SmartExtractor:
         doc_to_close = None
         try:
             if pdf_hash and pdf_hash in self.parsed_pdf_cache:
-                log.info(f"CACHE HIT (Parse): Usando PDF pré-parseado.")
+                log.info(f"CACHE HIT (Parse)")
                 parsed_pdf = self.parsed_pdf_cache[pdf_hash]
                 doc_to_close = fitz.open(pdf_path) 
                 parsed_pdf["doc"] = doc_to_close
                 parsed_pdf["page"] = doc_to_close[0]
             else:
-                log.info(f"CACHE MISS (Parse): Parseando PDF...")
+                log.info(f"Parseando PDF...")
                 parsed_pdf = self._parse_pdf(pdf_path)
                 if parsed_pdf:
                     doc_to_close = parsed_pdf.get("doc")
@@ -778,7 +853,7 @@ class SmartExtractor:
                 log.error(f"Falha ao parsear PDF")
                 return {field: None for field in extraction_schema.keys()}
 
-            log.info(">> Estratégia: Template Desconhecido (Chamada LLM individual rápida)...")
+            log.info(">> Template Desconhecido (LLM)")
             extracted_data_clean = self._extract_variable_template(
                 extraction_schema, parsed_pdf
             )
@@ -793,36 +868,33 @@ class SmartExtractor:
             if doc_to_close:
                 doc_to_close.close()
 
-    # --- MÉTODO PRINCIPAL DE LOTE (MODIFICADO) ---
     def extract_batch(self, requests: List[ExtractRequest]) -> Generator[Dict[str, Any], None, None]:
         """
-        Processa uma lista de pedidos de extração de forma sequencial.
-        Retorna (yield) o resultado de cada documento assim que ele é concluído.
+        Processa documentos de forma sequencial.
+        Retorna (yield) cada resultado assim que concluído.
         """
         
-        log.info(f"Iniciando extração sequencial para {len(requests)} documentos...")
+        log.info(f"Iniciando extração para {len(requests)} documentos...")
         
-        # --- FASE 1: LOOP PRINCIPAL (SEQUENCIAL) ---
         for i, req in enumerate(requests):
-            log.info(f"\n[Doc {i+1}/{len(requests)}] Processando: {req.pdf_path} (Label: '{req.label}')")
+            log.info(f"\n[Doc {i+1}/{len(requests)}] {req.pdf_path} (Label: '{req.label}')")
             
             req._pdf_hash = self._get_pdf_hash(req.pdf_path)
             if req._pdf_hash and req._pdf_hash in self.pdf_cache:
-                log.info(f"CACHE HIT (Resultado): PDF já processado")
+                log.info(f"CACHE HIT")
                 self.stats['cache_hits'] += 1
                 req._result = self.pdf_cache[req._pdf_hash]
-                # Pula para a FASE 3 (Yield)
             
             else:
-                # --- PARSE ---
+                # Parse
                 if req._pdf_hash and req._pdf_hash in self.parsed_pdf_cache:
-                    log.info(f"CACHE HIT (Parse): Usando PDF pré-parseado.")
+                    log.info(f"CACHE HIT (Parse)")
                     req._parsed_pdf = self.parsed_pdf_cache[req._pdf_hash]
                     doc = fitz.open(req.pdf_path)
                     req._parsed_pdf["doc"] = doc
                     req._parsed_pdf["page"] = doc[0]
                 else:
-                    log.info(f"CACHE MISS (Parse): Parseando PDF...")
+                    log.info(f"Parseando PDF...")
                     req._parsed_pdf = self._parse_pdf(req.pdf_path)
                     if req._parsed_pdf:
                         cached_parse_data = req._parsed_pdf.copy()
@@ -831,31 +903,29 @@ class SmartExtractor:
                         self.parsed_pdf_cache[req._pdf_hash] = cached_parse_data
 
                 if not req._parsed_pdf:
-                    log.error(f"Falha ao parsear PDF, pulando para FASE 3.")
+                    log.error(f"Falha no parse")
                     req._result = {field: None for field in req.extraction_schema.keys()}
-                    # Pula para a FASE 3 (Yield)
 
-                # --- LÓGICA DE EXTRAÇÃO (Se o parse funcionou) ---
+                # Extração
                 elif req.label not in self.KB:
-                    log.info(f"Label novo: '{req.label}'. Iniciando Bootstrap (chamada individual)...")
+                    log.info(f"Label novo: '{req.label}'. Bootstrap...")
                     bootstrap_data_clean = self._bootstrap_new_label_with_llm(
                         req.label, req.extraction_schema, req._parsed_pdf
                     )
-                    # Converte para o formato raw (com \n) para o cache
                     req._result = {f: (v.replace(', ', '\n') if isinstance(v, str) else None) for f, v in bootstrap_data_clean.items()}
                 
                 else:
                     is_fixed = self.label_metadata.get(req.label, {}).get('template_fixo', True)
                     
                     if not is_fixed:
-                        log.info(">> Estratégia: Template Variável (Chamada LLM individual)...")
+                        log.info(">> Template Variável (LLM)")
                         variable_data_clean = self._extract_variable_template(
                             req.extraction_schema, req._parsed_pdf
                         )
                         req._result = {f: (v.replace(', ', '\n') if isinstance(v, str) else None) for f, v in variable_data_clean.items()}
                     
                     else:
-                        log.info(">> Estratégia: Template Fixo (Apenas Heurísticas)...")
+                        log.info(">> Template Fixo (Heurísticas)")
                         for field, description in req.extraction_schema.items():
                             value = None
                             found = False
@@ -869,40 +939,36 @@ class SmartExtractor:
                                     is_confirmed_empty = True
                             
                             if found and value is not None:
-                                # log.info(f"Heurística '{heuristic.type}' encontrou valor para '{field}'.")
                                 req._result[field] = value
                             
                             elif is_confirmed_empty:
-                                log.info(f"Heurística 'ANCHOR_EMPTY' confirmou Nulo para '{field}'. (Sem LLM)")
+                                log.info(f"ANCHOR_EMPTY confirmou Nulo: '{field}'")
                                 req._result[field] = None
                             
                             else:
                                 if not (field in self.KB[req.label]):
-                                     log.warning(f"Nenhuma heurística salva para '{field}'. Adicionando à fila de LLM.")
+                                     log.warning(f"Sem heurística: '{field}' → LLM")
                                 else:
-                                     log.warning(f"Heurística '{self.KB[req.label][field].type}' falhou em encontrar valor para '{field}'. Adicionando à fila de LLM.")
+                                     log.warning(f"Heurística falhou: '{field}' → LLM")
                                 
                                 req._failed_fields.append(field)
-                                # Não adiciona à fila de lote, apenas marca como falha
 
-                        # --- FASE 2: FALLBACK LLM (INDIVIDUAL) ---
-                        # Esta chamada agora acontece DENTRO do loop de cada documento
+                        # Fallback LLM individual
                         if req._failed_fields:
-                            log.info(f"[Doc {i+1}] {len(req._failed_fields)} falhas. Chamando LLM fallback individual...")
-                            self._single_doc_llm_fallback(req) # Chama o novo método
+                            log.info(f"[Doc {i+1}] {len(req._failed_fields)} falhas. LLM fallback...")
+                            self._single_doc_llm_fallback(req)
                         else:
-                            log.info(f"[Doc {i+1}] Sucesso total com heurísticas.")
+                            log.info(f"[Doc {i+1}] Sucesso total com heurísticas")
 
-            # --- FASE 3: FINALIZAR, SALVAR CACHE E RETORNAR (YIELD) ---
+            # Finalizar
             final_data_raw = {}
             for field in req.extraction_schema.keys():
                 final_data_raw[field] = req._result.get(field)
 
-            # Salva no cache de resultado (se já não estiver lá)
             if req._pdf_hash and req._pdf_hash not in self.pdf_cache:
                 self.pdf_cache[req._pdf_hash] = final_data_raw.copy()
 
-            # Limpa os dados (formato \n -> ,) para o retorno
+            # Limpa dados para retorno
             cleaned_data = {}
             for field, value in final_data_raw.items():
                 if isinstance(value, str):
@@ -910,25 +976,21 @@ class SmartExtractor:
                 else:
                     cleaned_data[field] = value
             
-            # Fecha o documento PDF se ele foi aberto
+            # Fecha PDF
             if req._parsed_pdf and req._parsed_pdf.get("doc"):
                 req._parsed_pdf["doc"].close()
                 req._parsed_pdf["doc"] = None
                 req._parsed_pdf["page"] = None
 
-            log.info(f"[Doc {i+1}/{len(requests)}] Documento finalizado e retornado.")
+            log.info(f"[Doc {i+1}/{len(requests)}] Concluído")
             yield cleaned_data
 
-        log.info("Processamento em lote (sequencial) concluído.")
-        # Fim da função (generators não precisam de return)
+        log.info("Processamento em lote concluído")
 
-
-    # ATUALIZADO: Método `extract` agora consome o generator
     def extract(self, label: str, extraction_schema: Dict[str, str], 
                 pdf_path: str) -> Dict[str, Any]:
         """
-        Ponto de entrada para um único ficheiro.
-        Envolve o novo método de extração em lote para reutilizar a lógica.
+        Extrai dados de um único documento.
         """
         print(f"\n{'='*70}")
         print(f"Requisição: {label} | {len(extraction_schema)} campos")
@@ -941,7 +1003,6 @@ class SmartExtractor:
             pdf_path=pdf_path
         )
         
-        # Converte o generator de volta para uma lista e pega o primeiro item
         batch_results = list(self.extract_batch([single_request]))
         
         return batch_results[0]

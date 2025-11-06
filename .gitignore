@@ -38,5 +38,6 @@ results.json
 output.json
 
 # Data (optional - uncomment if you don't want to commit PDFs)
-# *.pdf
-# /data/
+temps_uploads/
+knowledge_base.json
+extraction_results.json

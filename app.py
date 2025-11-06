@@ -7,7 +7,7 @@ import time
 import uuid
 import logging
 import shutil
-import threading # Necessário para rodar em background
+import threading
 from extractor import SmartExtractor, ExtractRequest
 
 app = Flask(__name__)
@@ -148,7 +148,6 @@ def extract_endpoint():
         log.error(f"Erro no /api/extract: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
-# --- MODIFICADO: Endpoint de Lote agora inicia um Job ---
 @app.route('/api/batch_upload', methods=['POST'])
 def batch_upload_endpoint():
     """
@@ -238,10 +237,8 @@ def batch_upload_endpoint():
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         return jsonify({'error': str(e)}), 500
-    # Note: O 'finally' que limpava o temp_dir foi REMOVIDO daqui
-    # e movido para dentro da thread 'process_batch_in_background'
 
-# --- NOVO: Endpoint para o Front-end "perguntar" o progresso ---
+# --- Endpoints ---
 @app.route('/api/batch_status/<job_id>', methods=['GET'])
 def batch_status_endpoint(job_id):
     """
@@ -256,7 +253,6 @@ def batch_status_endpoint(job_id):
     # Retorna a informação de status atual
     return jsonify(job_info)
 
-# --- NOVO: Endpoint para limpar um job da memória ---
 @app.route('/api/batch_cleanup/<job_id>', methods=['POST'])
 def batch_cleanup_endpoint(job_id):
     """
@@ -272,8 +268,7 @@ def batch_cleanup_endpoint(job_id):
                 return jsonify({"error": "Job still running"}), 400
         else:
             return jsonify({"error": "Job not found"}), 404
-            
-# --- Outros Endpoints (sem mudanças) ---
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'extractor_ready': 'true'})
